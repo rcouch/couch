@@ -12,7 +12,8 @@
 
 -module(couch_doc).
 
--export([to_doc_info/1,to_doc_info_path/1,parse_rev/1,parse_revs/1,rev_to_str/1,revs_to_strs/1]).
+-export([to_doc_info/1,to_doc_info_path/1,parse_rev/1,parse_revs/1,
+         rev_to_str/1, revs_to_strs/1]).
 -export([att_foldl/3,range_att_foldl/5,att_foldl_decode/3,
          get_validate_doc_fun/1,get_validate_read_doc_fun/1]).
 -export([from_json_obj/1,to_json_obj/2,has_stubs/1, merge_stubs/2]).
