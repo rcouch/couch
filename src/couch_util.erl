@@ -33,6 +33,8 @@
 -export([rfc1123_date/0, rfc1123_date/1]).
 -export([find_in_binary/2]).
 -export([to_atom/1]).
+-export([load_doc/3, load_doc/4]).
+
 
 -include("couch_db.hrl").
 
@@ -524,4 +526,34 @@ match_rest_of_prefix([{Pos, _Len} | Rest], Prefix, Data, PrefixLength, N) ->
             match_rest_of_prefix(Rest, Prefix, Data, PrefixLength, N);
         {_Pos, _Len1} ->
             {partial, N + Pos}
+    end.
+
+
+load_doc(Db, #doc_info{}=DI, Opts) ->
+    Deleted = lists:member(deleted, Opts),
+    case (catch couch_db:open_doc(Db, DI, Opts)) of
+        {ok, #doc{deleted=false}=Doc} -> Doc;
+        {ok, #doc{deleted=true}=Doc} when Deleted -> Doc;
+        _Else -> null
+    end;
+load_doc(Db, {DocId, Rev}, Opts) ->
+    case (catch load_doc(Db, DocId, Rev, Opts)) of
+        #doc{deleted=false} = Doc -> Doc;
+        _ -> null
+    end.
+
+
+load_doc(Db, DocId, Rev, Options) ->
+    case Rev of
+        nil -> % open most recent rev
+            case (catch couch_db:open_doc(Db, DocId, Options)) of
+                {ok, Doc} -> Doc;
+                _Error -> null
+            end;
+        _ -> % open a specific rev (deletions come back as stubs)
+            case (catch couch_db:open_doc_revs(Db, DocId, [Rev], Options)) of
+                {ok, [{ok, Doc}]} -> Doc;
+                {ok, [{{not_found, missing}, Rev}]} -> null;
+                {ok, [_Else]} -> null
+            end
     end.

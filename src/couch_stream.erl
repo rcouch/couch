@@ -226,8 +226,6 @@ stream({stream_decode, DecFun, EndFun, Fd, [Pos | Rest], Md5, Md5Acc}) ->
     NStream = {stream_decode, DecFun, EndFun, Fd, Rest, Md5, Md5Acc1},
     {more, Bin, NStream}.
 
-
-
 gzip_init(Options) ->
     case couch_util:get_value(compression_level, Options, 0) of
     Lvl when Lvl >= 1 andalso Lvl =< 9 ->

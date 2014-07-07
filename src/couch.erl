@@ -25,11 +25,34 @@
 
 
 -export([get/2, get/3,
-         stream_doc/1]).
+         stream_doc/1,
+         fold/3, fold/4]).
 
 -include("couch_db.hrl").
 
 -record(cdb, {name, options}).
+
+-record(all_docs_args, {start_key,
+                        end_key,
+                        keys=undefined,
+                        direction = fwd,
+                        limit = 16#10000000,
+                        skip = 0,
+                        inclusive_end = true,
+                        include_docs = false,
+                        doc_options = [],
+                        update_seq=false,
+                        conflicts,
+                        extra = []}).
+
+-record(docs_acc, {db,
+                   args,
+                   offset=undefined,
+                   limit = 16#10000000,
+                   skip = 0,
+                   reduce_fun,
+                   useracc,
+                   callback}).
 
 -type dbname() :: string() | binary().
 -type db() :: #cdb{}.
@@ -40,9 +63,9 @@
 -type db_info() :: list().
 
 -export_type([dbname/0,
-               db/0,
-               db_options/0,
-               db_info/0]).
+              db/0,
+              db_options/0,
+              db_info/0]).
 
 
 -type docid() :: binary().
@@ -61,6 +84,19 @@
                         att_encoding_info |
                         stream |
                         {timeout, infinity | integer()}].
+
+-type all_docs_options() :: [{keys, [docid()]} |
+                             {start_key, docid()} |
+                             {end_key, docid()} |
+                             inclusive_end |
+                             {limit, integer()} |
+                             descending | {descending, boolean()} |
+                             {skip, integer()} |
+                             include_docs |
+                             attachments |
+                             att_encoding_info |
+                             conflicts].
+
 
 -type ejson_array() :: [ejson_term()].
 -type ejson_object() :: {[{ejson_key(), ejson_term()}]}.
@@ -83,6 +119,7 @@
 
 -export_type([update_type/0,
               doc_options/0,
+              all_docs_options/0,
               docid/0,
               rev/0,
               doc/0,
@@ -301,7 +338,6 @@ get(Db, DocId, Options0) ->
             end
     end.
 
-
 %% @doc stream document. Function to use when the stream option is used
 %% for a document.
 -spec stream_doc(Next::next()) ->
@@ -313,9 +349,103 @@ get(Db, DocId, Options0) ->
 stream_doc(Next) when is_function(Next) ->
     Next().
 
+%% @doc fold all documents in the database
+-spec fold(Db::db(), UserFun::fun(), AccIn::any())
+    -> {ok, AccOut::any()} | {error, term()}.
+fold(Db, UserFun, AccIn) ->
+    fold(Db, UserFun, AccIn, []).
 
-%% stream doc functions
+%% @doc fold all documents in the database
+-spec fold(Db::db(), UserFun::fun(), AccIn::any(), Options::all_docs_options())
+    -> {ok, AccOut::any()} | {error, term()}.
+fold(Db0, UserFun, AccIn, Options) ->
+    Args = parse_all_docs_options(Options),
+    #all_docs_args{keys=Keys0,
+                   direction=Dir,
+                   limit=Limit,
+                   skip=Skip} = Args,
 
+    with_db(Db0, fun(Db) ->
+                Acc0 = #docs_acc{db=Db,
+                                 args=Args,
+                                 limit = Limit,
+                                 skip = Skip,
+                                 reduce_fun = fun all_docs_reduce_to_count/1,
+                                 useracc = AccIn,
+                                 callback = UserFun},
+
+                case Keys0 of
+                    undefined ->
+                        [Opts] = all_docs_key_opts(Args),
+                        {ok, _Offset, FinalAcc} = couch_db:enum_docs(
+                                Db, fun all_docs_cb/3, Acc0, Opts),
+                        #docs_acc{useracc=AccOut}=FinalAcc,
+                        {ok, AccOut};
+                    _ when is_list(Keys0) ->
+                        Keys = case Dir of
+                           fwd -> Keys0;
+                           rev -> lists:reverse(Keys0)
+                        end,
+                        enum_docs(Keys, Db, Acc0)
+                end
+        end).
+
+
+
+enum_docs([], _Db, #docs_acc{useracc=Acc}) ->
+    {ok, Acc};
+enum_docs([_Key | Rest], Db, #docs_acc{skip=N}=Acc) when N > 0 ->
+    enum_docs(Rest, Db, Acc#docs_acc{skip=N-1});
+enum_docs(_, _Db, #docs_acc{limit=0, useracc=Acc}) ->
+   {ok, Acc};
+enum_docs([Key | Rest], Db, #docs_acc{args=Args,
+                                      limit=N,
+                                      callback=Callback,
+                                      useracc=UserAcc}=Acc) ->
+    DocInfo = (catch couch_db:get_doc_info(Db, Key)),
+    Row = case DocInfo of
+        {ok, #doc_info{id=Id, revs=[RevInfo | _RestRevs]}=DI} ->
+            Rev = couch_doc:rev_to_str(RevInfo#rev_info.rev),
+            Props = [{rev, Rev}] ++ case RevInfo#rev_info.deleted of
+                true -> [{deleted, true}];
+                false -> []
+            end,
+            [{id, Id}, {key, Key}, {value, {Props}}] ++ maybe_load_doc(Db, DI,
+                                                                       Args);
+        not_found ->
+            [{key, Key}, {error, not_found}]
+    end,
+    case Callback(Row, UserAcc) of
+        {ok, UserAcc2} ->
+            enum_docs(Rest, Db, Acc#docs_acc{useracc=UserAcc2,
+                                             limit=N-1});
+        {stop, UserAcc2} ->
+            {ok, UserAcc2}
+    end.
+
+all_docs_cb(_FullDocInfo, _OffsetReds, #docs_acc{skip=N}=Acc) when N > 0 ->
+    {ok, Acc#docs_acc{skip=N-1}};
+all_docs_cb(_FullDocInfo, _OffsetReds, #docs_acc{limit=0}=Acc) ->
+    {stop, Acc};
+all_docs_cb(#full_doc_info{} = FullDocInfo, OffsetReds,
+            #docs_acc{db=Db, limit=N, args=Args, reduce_fun=Reduce,
+                      useracc=UserAcc, callback=Callback}=Acc) ->
+    DI = couch_doc:to_doc_info(FullDocInfo),
+    #doc_info{id=Id, revs=[RevInfo | _]} = DI,
+    Rev = Rev = couch_doc:rev_to_str(RevInfo#rev_info.rev),
+    Props = [{rev, Rev}] ++ case RevInfo#rev_info.deleted of
+                true -> [{deleted, true}];
+                false -> []
+            end,
+    Row = [{id, Id}, {key, Id}, {value, {Props}}] ++ maybe_load_doc(Db, DI,
+                                                                     Args),
+
+    Offset2 = Reduce(OffsetReds),
+
+    {Go, UserAcc2} = Callback(Row, UserAcc),
+    {Go, Acc#docs_acc{limit=N-1, offset=Offset2, useracc=UserAcc2}}.
+
+%% private  doc iterator functions
 stream_docs([], DocId, _Options) ->
     {doc_eof, DocId};
 stream_docs([{{not_found, missing}, RevId} | Rest], DocId, Options) ->
@@ -443,3 +573,126 @@ db_options(Options) ->
         false ->
             [{user_ctx, #user_ctx{roles=[<<"_admin">>]}} | Options]
     end.
+
+
+all_docs_key_opts(Args) ->
+    all_docs_key_opts(Args, []).
+
+
+all_docs_key_opts(#all_docs_args{keys=undefined}=Args, Extra) ->
+    all_docs_key_opts(Args#all_docs_args{keys=[]}, Extra);
+all_docs_key_opts(#all_docs_args{keys=[], direction=Dir}=Args, Extra) ->
+    [[{dir, Dir}] ++ ad_skey_opts(Args) ++ ad_ekey_opts(Args) ++ Extra];
+all_docs_key_opts(#all_docs_args{keys=Keys, direction=Dir}=Args, Extra) ->
+    lists:map(fun(K) ->
+        [{dir, Dir}]
+        ++ ad_skey_opts(Args#all_docs_args{start_key=K})
+        ++ ad_ekey_opts(Args#all_docs_args{end_key=K})
+        ++ Extra
+    end, Keys).
+
+
+ad_skey_opts(#all_docs_args{start_key=SKey}) ->
+    [{start_key, SKey}].
+
+
+ad_ekey_opts(#all_docs_args{end_key=EKey}=Args) ->
+    Type = if Args#all_docs_args.inclusive_end -> end_key;
+        true -> end_key_gt
+    end,
+    [{Type, EKey}].
+
+parse_all_docs_options(Options) ->
+    parse_all_docs_options(Options, #all_docs_args{}).
+
+parse_all_docs_options([], Args) ->
+    Args;
+parse_all_docs_options([{keys, Keys}| Rest], Args) ->
+    parse_all_docs_options(Rest, Args#all_docs_args{keys=Keys});
+parse_all_docs_options([{key, Key}| Rest], Args) ->
+    parse_all_docs_options(Rest, Args#all_docs_args{start_key=Key,
+                                               end_key=Key});
+parse_all_docs_options([{start_key, Key}| Rest], Args) ->
+    parse_all_docs_options(Rest, Args#all_docs_args{start_key=Key});
+parse_all_docs_options([{startkey, Key}| Rest], Args) ->
+    parse_all_docs_options(Rest, Args#all_docs_args{start_key=Key});
+parse_all_docs_options([{end_key, Key}| Rest], Args) ->
+    parse_all_docs_options(Rest, Args#all_docs_args{end_key=Key});
+parse_all_docs_options([{endkey, Key}| Rest], Args) ->
+    parse_all_docs_options(Rest, Args#all_docs_args{end_key=Key});
+parse_all_docs_options([{start_key_docid, Key}| Rest], Args) ->
+    parse_all_docs_options(Rest, Args#all_docs_args{start_key=Key});
+parse_all_docs_options([{end_key_docid, Key}| Rest], Args) ->
+    parse_all_docs_options(Rest, Args#all_docs_args{end_key=Key});
+parse_all_docs_options([{limit, Limit}| Rest], Args) when is_integer(Limit) ->
+    parse_all_docs_options(Rest, Args#all_docs_args{limit=Limit});
+parse_all_docs_options([descending | Rest], Args) ->
+    parse_all_docs_options(Rest, Args#all_docs_args{direction=rev});
+parse_all_docs_options([{descending, Descending} | Rest], Args) ->
+    Dir = case Descending of
+        true -> rev;
+        false -> fwd
+    end,
+    parse_all_docs_options(Rest, Args#all_docs_args{direction=Dir});
+parse_all_docs_options([{skip, N} | Rest], Args) when is_integer(N) ->
+    parse_all_docs_options(Rest, Args#all_docs_args{skip=N});
+parse_all_docs_options([inclusive_end | Rest], Args) ->
+    parse_all_docs_options(Rest, Args#all_docs_args{inclusive_end=true});
+parse_all_docs_options([{inclusive_end, Val} | Rest], Args) ->
+    parse_all_docs_options(Rest, Args#all_docs_args{inclusive_end=Val});
+parse_all_docs_options([include_docs | Rest], Args) ->
+    parse_all_docs_options(Rest, Args#all_docs_args{include_docs=true});
+parse_all_docs_options([{include_docs, Val} | Rest], Args) ->
+    parse_all_docs_options(Rest, Args#all_docs_args{include_docs=Val});
+parse_all_docs_options([attachments | Rest], Args) ->
+    Opts = Args#all_docs_args.doc_options,
+    Args2 = Args#all_docs_args{doc_options=[attachments|Opts]},
+    parse_all_docs_options(Rest, Args2);
+parse_all_docs_options([{attachments, Val} | Rest], Args) ->
+    Args2 = case Val of
+        true ->
+            Opts = Args#all_docs_args.doc_options,
+            Args#all_docs_args{doc_options=[attachments|Opts]};
+        false ->
+            Args
+    end,
+    parse_all_docs_options(Rest, Args2);
+parse_all_docs_options([att_encoding_info | Rest], Args) ->
+    Opts = Args#all_docs_args.doc_options,
+    Args2 = Args#all_docs_args{doc_options=[att_encoding_info|Opts]},
+    parse_all_docs_options(Rest, Args2);
+parse_all_docs_options([{att_encoding_info, Val} | Rest], Args) ->
+    Args2 = case Val of
+        true ->
+            Opts = Args#all_docs_args.doc_options,
+            Args#all_docs_args{doc_options=[att_encoding_info|Opts]};
+        false ->
+            Args
+    end,
+    parse_all_docs_options(Rest, Args2);
+parse_all_docs_options([conflicts | Rest], Args) ->
+    parse_all_docs_options(Rest, Args#all_docs_args{conflicts=true});
+parse_all_docs_options([{conflicts, Val} | Rest], Args) ->
+    parse_all_docs_options(Rest, Args#all_docs_args{conflicts=Val});
+parse_all_docs_options([Extra | Rest], #all_docs_args{extra=Extras}=Args) ->
+    parse_all_docs_options(Rest, Args#all_docs_args{extra=[Extra | Extras]}).
+
+
+
+maybe_load_doc(_Db, _DI, #all_docs_args{include_docs=false}) ->
+    [];
+maybe_load_doc(Db, #doc_info{}=DI, #all_docs_args{conflicts=true,
+                                                  doc_options=Opts}) ->
+    doc_row(couch_util:load_doc(Db, DI, [conflicts]), Opts);
+maybe_load_doc(Db, #doc_info{}=DI, #all_docs_args{doc_options=Opts}) ->
+    doc_row(couch_util:load_doc(Db, DI, []), Opts).
+
+doc_row(null, _Opts) ->
+    [{doc, null}];
+doc_row(Doc, Opts) ->
+    [{doc, couch_doc:to_json_obj(Doc, Opts)}].
+
+all_docs_reduce_to_count(Reductions) ->
+    Reduce = fun couch_db_updater:btree_by_id_reduce/2,
+    {Count, _, _} = couch_btree:final_reduce(Reduce, Reductions),
+    Count.
