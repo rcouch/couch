@@ -259,26 +259,27 @@ get(Db, DocId, Options0) ->
     Revs = couch_util:get_value(open_revs, Options, []),
     Rev = couch_util:get_value(rev, Options, nil),
     Stream = proplists:get_value(stream, Options, false),
+    Attachments = lists:member(attachments, Options),
 
     case Revs of
         [] ->
             case couch_doc_open(Db, DocId, Rev, Options) of
                 {ok, #doc{atts=[]}=Doc} ->
                     {ok, couch_doc:to_json_obj(Doc, Options)};
-                {ok, Doc} when Stream /= true ->
+                {ok, Doc} when Stream =:= false, Attachments /= true ->
                     {ok, couch_doc:to_json_obj(Doc, Options)};
                 {ok, Doc} ->
                     Options1 = [attachments, follows, att_encoding_info
                                 | Options],
                     {ok, {stream, fun() ->
-                                    stream_docs([Doc], Options1)
+                                    stream_docs([Doc], DocId, Options1)
                             end}};
                 Error ->
                     Error
             end;
         _ ->
             case open_doc_revs(Db, DocId, Revs, Options) of
-                {ok, Results} when Stream /= true ->
+                {ok, Results} when Stream =:= false ->
                     Results2 = lists:foldl(fun
                                 ({ok, Doc}, Acc) ->
                                     JsonDoc = couch_doc:to_json_obj(
@@ -293,7 +294,7 @@ get(Db, DocId, Options0) ->
                     Options1 = [attachments, follows, att_encoding_info
                                 | Options],
                     {ok, {stream, fun() ->
-                                    stream_docs(Results, Options1)
+                                    stream_docs(Results, DocId, Options1)
                             end}};
                 Error ->
                     Error
@@ -304,38 +305,36 @@ get(Db, DocId, Options0) ->
 %% @doc stream document. Function to use when the stream option is used
 %% for a document.
 -spec stream_doc(Next::next()) ->
-    {doc, Doc::doc(), Next2::next()} |
+    {doc, DocId::docid(), Doc::doc(), Next2::next()} |
     {att, Name::binary(), AttInfo::list(), Next2::next()} |
     {att_body, Name::binary(), Next2::next()} |
     {att_eof, Name::binary(), Next2::next()} |
-    eof.
+    {doc_eof, DocId::docid()}.
 stream_doc(Next) when is_function(Next) ->
     Next().
 
 
-
-
 %% stream doc functions
 
-stream_docs([], _Options) ->
-    eof;
-stream_docs([{{not_found, missing}, RevId} | Rest], Options) ->
+stream_docs([], DocId, _Options) ->
+    {doc_eof, DocId};
+stream_docs([{{not_found, missing}, RevId} | Rest], DocId, Options) ->
     RevStr = couch_doc:rev_to_str(RevId),
     {missing, RevStr, fun() ->
-                stream_docs(Rest, Options)
+                stream_docs(Rest, DocId, Options)
         end};
-stream_docs([{ok, #doc{atts=Atts}=Doc} | Rest], Options) ->
+stream_docs([{ok, #doc{atts=Atts}=Doc} | Rest], DocId, Options) ->
     JsonDoc = couch_doc:to_json_obj(Doc, Options),
-    {doc, JsonDoc, fun() ->
-                stream_attachments(Atts, Rest, Options)
+    {doc, DocId, JsonDoc, fun() ->
+                stream_attachments(Atts, Rest, DocId, Options)
         end}.
 
 
-stream_attachments([], [], _Options) ->
-    eof;
-stream_attachments([], Docs, Options) ->
-    stream_docs(Docs, Options);
-stream_attachments([Att |Rest], Docs, Options) ->
+stream_attachments([], [], DocId, _Options) ->
+    {doc_eof, DocId};
+stream_attachments([], Docs, DocId, Options) ->
+    stream_docs(Docs, DocId, Options);
+stream_attachments([Att |Rest], Docs, DocId, Options) ->
     #att{
         name=Name,
         att_len=AttLen,
@@ -350,75 +349,101 @@ stream_attachments([Att |Rest], Docs, Options) ->
                {type, Type},
                {encoding, Encoding}],
 
-    Ref = make_ref(),
-    AttPid = spawn_link(fun() ->
-                    att_loop(Att, Ref)
-            end),
-
     case lists:member(stream_att_infos, Options) of
         true ->
             {att, Name, AttInfo, fun() ->
-                        stream_attachments(Rest, Docs, Options)
+                        stream_attachments(Rest, Docs, DocId, Options)
                 end};
         false ->
             {att, Name, AttInfo, fun() ->
-                        stream_attachment(Name, Ref, AttPid, Rest, Docs, Options)
+                        stream_attachment(Att, Rest, Docs, DocId, Options)
                 end}
     end.
 
-stream_attachment(Name, Ref, AttPid, Atts, Docs, Options) ->
-    Timeout = couch_util:get_value(timeout, Options, infinity),
+stream_attachment({att_eof, Name}, Atts, Docs, DocId, Options) ->
+    {att_eof, Name, fun() ->
+                stream_attachments(Atts, Docs, DocId, Options)
+        end};
+stream_attachment(#att{name=Name, data=Bin}, Atts, Docs, DocId, Options)
+        when is_binary(Bin) ->
+    {att_chunk, Name, Bin, fun() ->
+                stream_attachment({att_eof, Name}, Atts, Docs, DocId, Options)
+        end};
+stream_attachment(#att{name=Name, data={Fd,Sp}, md5=Md5}, Atts, Docs,
+                  DocId, Options) ->
+    Stream= case Md5 of
+        <<>> ->
+            {stream, Name, Fd, Sp};
+        _ ->
+            {stream, Name, Fd, Sp, Md5, couch_util:md5_init()}
+    end,
+    stream_attachment1(Stream, Atts, Docs, DocId, Options);
+stream_attachment(#att{name=Name, data=DataFun ,att_len=Len}, Atts,
+                  Docs, DocId, Options) when is_function(DataFun) ->
+    stream_attachment1({stream, Name, DataFun, Len}, Atts, Docs,
+                       DocId, Options).
 
-    AttPid ! {Ref, self(), next},
-    receive
-        {Ref, att_eof} ->
+
+stream_attachment1({stream, Name, _Fd, []}, Atts, Docs, DocId, Options) ->
+    {att_eof, Name, fun() ->
+                stream_attachments(Atts, Docs, DocId, Options)
+        end};
+stream_attachment1({stream, Name, Fd, [Pos | Rest]}, Atts, Docs, DocId,
+                   Options) ->
+    {ok, Bin} = couch_file:pread_iolist(Fd, Pos),
+    {att_chunk, Name, Bin, fun() ->
+                stream_attachment1({stream, Name, Fd, Rest}, Atts, Docs,
+                                   DocId, Options)
+        end};
+stream_attachment1({stream, Name, _DataFun, 0}, Atts, Docs, DocId, Options) ->
+    {att_eof, Name, fun() ->
+                stream_attachments(Atts, Docs, DocId, Options)
+        end};
+stream_attachment1({stream, Name, DataFun, LenLeft}, Atts, Docs, DocId,
+                   Options) when is_function(DataFun), LenLeft > 0 ->
+
+    Bin = DataFun(),
+    LenLeft2 = LenLeft - size(Bin),
+    {att_chunk, Name, Bin, fun() ->
+                stream_attachment1({stream, Name, DataFun, LenLeft2},
+                                   Atts, Docs, DocId, Options)
+        end};
+stream_attachment1({stream, Name, _Fd, [], Md5, Md5Acc}, Atts, Docs,
+                   DocId, Options) ->
+    case couch_util:md5_final(Md5Acc) of
+        Md5 ->
             {att_eof, Name, fun() ->
-                        stream_attachments(Atts, Docs, Options)
+                        stream_attachments(Atts, Docs, DocId, Options)
                 end};
-        {Ref, Bin} ->
-            {att_body, Name, Bin, fun() ->
-                        stream_attachment(Name, Ref, AttPid, Atts, Docs,
-                                          Options)
-                end};
-
-        {'EXIT', _Pid, Reason} ->
-            {error, Reason}
-    after Timeout ->
-            couch_util:shutdown_sync(AttPid)
-    end.
-
-att_loop(#att{data=Bin}, Ref) when is_binary(Bin) ->
-    receive
-        {Ref, From, next} ->
-            From ! {Ref, Bin}
+        _ ->
+            {error, corrupted_attachment}
     end;
-att_loop(#att{data={Fd,Sp}, md5=Md5}, Ref) ->
-    Ref = couch_stream:foldl(Fd, Sp, Md5, fun att_cb/2, Ref),
-    receive
-        {Ref, From, next} ->
-            From ! {Ref, att_eof}
-    end;
-att_loop(#att{data=DataFun ,att_len=Len}, Ref) when is_function(DataFun) ->
-    Ref = fold_streamed_data(DataFun, Len, fun att_cb/2, Ref),
-    receive
-        {Ref, From, next} ->
-            From ! {Ref, att_eof}
-    end.
+stream_attachment1({stream, Name, Fd, [{Pos, _Size}], Md5, Md5Acc},
+                   Atts, Docs, DocId, Options) ->
+    stream_attachment1({stream, Name, Fd, [Pos], Md5, Md5Acc}, Atts,
+                       Docs, DocId, Options);
+stream_attachment1({stream, Name, Fd, [Pos], Md5, Md5Acc}, Atts,
+                       Docs, DocId, Options) ->
+    {ok, Bin} = couch_file:pread_iolist(Fd, Pos),
+    Md5Acc1 = couch_util:md5_update(Md5Acc, Bin),
+    {att_chunk, Name, Bin, fun() ->
+                stream_attachment1({stream, Name, Fd, [], Md5, Md5Acc1},
+                                   Atts, Docs, DocId, Options)
+        end};
+stream_attachment1({stream, Name, Fd, [{Pos, _Size} | Rest], Md5, Md5Acc},
+                   Atts, Docs, DocId, Options) ->
+    stream_attachment1({stream, Name, Fd, [Pos|Rest], Md5, Md5Acc}, Atts,
+                       Docs, DocId, Options);
+stream_attachment1({stream, Name, Fd, [Pos|Rest], Md5, Md5Acc}, Atts,
+                   Docs, DocId, Options) ->
+    {ok, Bin} = couch_file:pread_iolist(Fd, Pos),
+    Md5Acc1 = couch_util:md5_update(Md5Acc, Bin),
+    {att_chunk, Name, Bin, fun() ->
+                stream_attachment1({stream, Name, Fd, Rest, Md5, Md5Acc1},
+                                   Atts, Docs, DocId, Options)
+        end}.
 
 
-att_cb(Bin, Ref) ->
-    receive
-        {Ref, From, next} ->
-            From ! {Ref, Bin},
-            Ref
-    end.
-
-fold_streamed_data(_RcvFun, 0, _Fun, Acc) ->
-    Acc;
-fold_streamed_data(RcvFun, LenLeft, Fun, Acc) when LenLeft > 0->
-    Bin = RcvFun(),
-    ResultAcc = Fun(Bin, Acc),
-    fold_streamed_data(RcvFun, LenLeft - size(Bin), Fun, ResultAcc).
 
 %% @private
 dbname(DbName) when is_list(DbName) ->
