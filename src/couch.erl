@@ -258,7 +258,7 @@ get(Db, DocId, Options0) ->
 
     Revs = couch_util:get_value(open_revs, Options, []),
     Rev = couch_util:get_value(rev, Options, nil),
-    Stream = proplists:get_value(stream, Options, false),
+    Stream = lists:member(stream, Options),
     Attachments = lists:member(attachments, Options),
 
     case Revs of
@@ -266,7 +266,7 @@ get(Db, DocId, Options0) ->
             case couch_doc_open(Db, DocId, Rev, Options) of
                 {ok, #doc{atts=[]}=Doc} ->
                     {ok, couch_doc:to_json_obj(Doc, Options)};
-                {ok, Doc} when Stream =:= false, Attachments /= true ->
+                {ok, Doc} when Stream /= true, Attachments /= true ->
                     {ok, couch_doc:to_json_obj(Doc, Options)};
                 {ok, Doc} ->
                     Options1 = [attachments, follows, att_encoding_info
@@ -279,7 +279,7 @@ get(Db, DocId, Options0) ->
             end;
         _ ->
             case open_doc_revs(Db, DocId, Revs, Options) of
-                {ok, Results} when Stream =:= false ->
+                {ok, Results} when Stream /= true ->
                     Results2 = lists:foldl(fun
                                 ({ok, Doc}, Acc) ->
                                     JsonDoc = couch_doc:to_json_obj(
