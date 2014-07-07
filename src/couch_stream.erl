@@ -17,6 +17,8 @@
 -export([open/1, open/2, close/1]).
 -export([foldl/4, foldl/5, foldl_decode/6, range_foldl/6]).
 -export([copy_to_new_stream/3, write/2]).
+-export([init_stream/1, init_stream/2,
+         stream/1]).
 
 % gen_server callbacks
 -export([init/1, terminate/2, code_change/3]).
@@ -149,6 +151,83 @@ foldl_decode(DecFun, Fd, [Pos|Rest], Md5, Md5Acc, Fun, Acc) ->
     Md5Acc2 = couch_util:md5_update(Md5Acc, EncBin),
     foldl_decode(DecFun, Fd, Rest, Md5, Md5Acc2, Fun, Fun(Bin, Acc)).
 
+
+init_stream(Att) ->
+    init_stream(Att, false).
+
+init_stream(#att{data={Fd,Sp}, md5=Md5, encoding=Enc}, decode) ->
+    {DecDataFun, DecEndFun} = case Enc of
+        gzip ->
+            couch_stream:ungzip_init();
+        identity ->
+            couch_stream:identity_enc_dec_funs()
+    end,
+    Md5Acc0 = couch_util:md5_init(),
+    {stream_decode,  DecDataFun, DecEndFun, Fd, Sp, Md5, Md5Acc0};
+init_stream(#att{data={Fd,Sp}, md5= <<>>}, _) ->
+    {stream, Fd, Sp};
+init_stream(#att{data={Fd,Sp}, md5=Md5}, _) ->
+    {stream, Fd, Sp, Md5, couch_util:md5_init()};
+init_stream(#att{data=DataFun ,att_len=Len}, _) when is_function(DataFun) ->
+    {stream, DataFun, Len}.
+
+stream({stream, _Fd, []}) ->
+    eof;
+stream({stream,  Fd, [Pos | Rest]}) ->
+    {ok, Bin} = couch_file:pread_iolist(Fd, Pos),
+    NStream = {stream, Fd, Rest},
+    {more, Bin, NStream};
+stream({stream, _DataFun, 0}) ->
+    eof;
+stream({stream, DataFun, LenLeft}) when LenLeft > 0 ->
+    Bin = DataFun(),
+    NStream = {stream, DataFun, LenLeft - size(Bin)},
+    {more, Bin, NStream};
+stream({stream,  _Fd, [], Md5, Md5Acc}) ->
+    case couch_util:md5_final(Md5Acc) of
+        Md5 -> eof;
+        _ -> {error, corrupted_attachment}
+    end;
+stream({stream, Fd, [{Pos, _Size}], Md5, Md5Acc}) ->
+    stream({stream, Fd, [Pos], Md5, Md5Acc});
+stream({stream, Fd, [Pos], Md5, Md5Acc}) ->
+    {ok, Bin} = couch_file:pread_iolist(Fd, Pos),
+    Md5Acc1 = couch_util:md5_update(Md5Acc, Bin),
+    NStream = {stream, Fd, [], Md5, Md5Acc1},
+    {more, Bin, NStream};
+stream({stream, Fd, [{Pos, _Size} | Rest], Md5, Md5Acc}) ->
+    stream({stream, Fd, [Pos | Rest], Md5, Md5Acc});
+stream({stream, Fd, [Pos | Rest], Md5, Md5Acc}) ->
+    {ok, Bin} = couch_file:pread_iolist(Fd, Pos),
+    Md5Acc1 = couch_util:md5_update(Md5Acc, Bin),
+    NStream = {stream, Fd, Rest, Md5, Md5Acc1},
+    {more, Bin, NStream};
+stream({stream_decode, _DecFun, EndFun, _Fd, [], Md5, Md5Acc}) ->
+    EndFun(),
+    case couch_util:md5_final(Md5Acc) of
+        Md5 -> eof;
+        _ -> {error, corrupted_attachment}
+    end;
+stream({stream_decode, DecFun, EndFun, Fd, [{Pos, _Size}], Md5, Md5Acc}) ->
+    stream({stream_decode, DecFun, EndFun, Fd, [Pos], Md5, Md5Acc});
+stream({stream_decode, DecFun, EndFun, Fd, [Pos], Md5, Md5Acc}) ->
+    {ok, EncBin} = couch_file:pread_iolist(Fd, Pos),
+    Bin = DecFun(EncBin),
+    Md5Acc1 = couch_util:md5_update(Md5Acc, EncBin),
+    NStream = {stream_decode, DecFun, EndFun, Fd, [], Md5, Md5Acc1},
+    {more, Bin, NStream};
+stream({stream_decode, DecFun, EndFun, Fd, [{Pos, _Size} | Rest],
+        Md5, Md5Acc}) ->
+    stream({stream_decode, DecFun, EndFun, Fd, [Pos | Rest], Md5, Md5Acc});
+stream({stream_decode, DecFun, EndFun, Fd, [Pos | Rest], Md5, Md5Acc}) ->
+    {ok, EncBin} = couch_file:pread_iolist(Fd, Pos),
+    Bin = DecFun(EncBin),
+    Md5Acc1 = couch_util:md5_update(Md5Acc, EncBin),
+    NStream = {stream_decode, DecFun, EndFun, Fd, Rest, Md5, Md5Acc1},
+    {more, Bin, NStream}.
+
+
+
 gzip_init(Options) ->
     case couch_util:get_value(compression_level, Options, 0) of
     Lvl when Lvl >= 1 andalso Lvl =< 9 ->
@@ -234,18 +313,17 @@ handle_call({write, Bin}, _From, Stream) ->
     if BinSize + BufferLen > Max ->
         WriteBin = lists:reverse(Buffer, [Bin]),
         IdenMd5_2 = couch_util:md5_update(IdenMd5, WriteBin),
-        case EncodingFun(WriteBin) of
+        {WrittenLen2, Md5_2, Written2} = case EncodingFun(WriteBin) of
         [] ->
             % case where the encoder did some internal buffering
             % (zlib does it for example)
-            WrittenLen2 = WrittenLen,
-            Md5_2 = Md5,
-            Written2 = Written;
+            {WrittenLen, Md5, Written} ;
         WriteBin2 ->
             {ok, Pos, _} = couch_file:append_binary(Fd, WriteBin2),
-            WrittenLen2 = WrittenLen + iolist_size(WriteBin2),
-            Md5_2 = couch_util:md5_update(Md5, WriteBin2),
-            Written2 = [{Pos, iolist_size(WriteBin2)}|Written]
+            WrittenLen1 = WrittenLen + iolist_size(WriteBin2),
+            Md5_1 = couch_util:md5_update(Md5, WriteBin2),
+            Written1 = [{Pos, iolist_size(WriteBin2)}|Written],
+            {WrittenLen1, Md5_1, Written1}
         end,
 
         {reply, ok, Stream#stream{
