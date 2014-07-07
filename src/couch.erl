@@ -39,7 +39,7 @@
                        {after_doc_update, fun() | nil}].
 -type db_info() :: list().
 
--export_types([dbname/0,
+-export_type([dbname/0,
                db/0,
                db_options/0,
                db_info/0]).
@@ -79,11 +79,14 @@
 
 -type doc() :: ejson_object().
 
--export_types([update_type/0,
-               doc_options/0,
-               docid/0,
-               rev/0,
-               doc/0]).
+-opaque next() :: function().
+
+-export_type([update_type/0,
+              doc_options/0,
+              docid/0,
+              rev/0,
+              doc/0,
+              next/0]).
 
 %% @doc return the couch application version
 version() ->
@@ -234,15 +237,18 @@ ensure_full_commit(Db, RequiredSeq) ->
                 end
         end).
 
+%% @doc get a document from the database
 -spec get(Db::db(), docid())
     ->  {ok, doc()} | {ok, [{ok, doc()} | {missing, rev()}]}
     | {error, term()}.
 get(Db, DocId) ->
     get(Db, DocId, []).
 
+%% @doc get a document from the database
 -spec get(Db::db(), docid(), doc_options())
-    ->  {ok, doc()} | {ok, [{ok, doc()} | {missing, rev()}]}
-    | {error, term()}.
+    ->  {ok, doc()} | {ok, [{ok, doc()} | {missing, rev()}]} |
+    {ok, {stream, next()}} |
+    {error, term()}.
 get(Db, DocId, Options0) ->
     Options = case couch_util:get_value(atts_since, Options0) of
         undefined -> Options0;
@@ -295,9 +301,20 @@ get(Db, DocId, Options0) ->
     end.
 
 
+%% @doc stream document. Function to use when the stream option is used
+%% for a document.
+-spec stream_doc(Next::next()) ->
+    {doc, Doc::doc(), Next2::next()} |
+    {att, Name::binary(), AttInfo::list(), Next2::next()} |
+    {att_body, Name::binary(), Next2::next()} |
+    {att_eof, Name::binary(), Next2::next()} |
+    eof.
 stream_doc(Next) when is_function(Next) ->
     Next().
 
+
+
+%% stream doc functions
 
 stream_docs([], _Options) ->
     eof;
