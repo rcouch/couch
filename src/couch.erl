@@ -314,6 +314,7 @@ stream_doc(Next) when is_function(Next) ->
 
 
 
+
 %% stream doc functions
 
 stream_docs([], _Options) ->
@@ -353,9 +354,17 @@ stream_attachments([Att |Rest], Docs, Options) ->
     AttPid = spawn_link(fun() ->
                     att_loop(Att, Ref)
             end),
-    {att, Name, AttInfo, fun() ->
-                stream_attachment(Name, Ref, AttPid, Rest, Docs, Options)
-        end}.
+
+    case lists:member(stream_att_infos, Options) of
+        true ->
+            {att, Name, AttInfo, fun() ->
+                        stream_attachments(Rest, Docs, Options)
+                end};
+        false ->
+            {att, Name, AttInfo, fun() ->
+                        stream_attachment(Name, Ref, AttPid, Rest, Docs, Options)
+                end}
+    end.
 
 stream_attachment(Name, Ref, AttPid, Atts, Docs, Options) ->
     Timeout = couch_util:get_value(timeout, Options, infinity),
