@@ -369,10 +369,21 @@ stream_attachment(#att{name=Name, data=Bin}, Atts, Docs, DocId, Options)
     {att_chunk, Name, Bin, fun() ->
                 stream_attachment({att_eof, Name}, Atts, Docs, DocId, Options)
         end};
-stream_attachment(#att{name=Name, data={Fd,Sp}, md5=Md5}, Atts, Docs,
-                  DocId, Options) ->
-    Stream= case Md5 of
-        <<>> ->
+stream_attachment(#att{name=Name, data={Fd,Sp}, md5=Md5, encoding=Enc},
+                  Atts, Docs, DocId, Options) ->
+    StreamType = proplists:get_value(stream, Options, false),
+
+    Stream= case {StreamType, Md5} of
+        {decode, _} ->
+            {DecDataFun, DecEndFun} = case Enc of
+                gzip ->
+                    couch_stream:ungzip_init();
+                identity ->
+                    couch_stream:identity_enc_dec_funs()
+            end,
+            Md5Acc0 = couch_util:md5_init(),
+            {stream_decode, Name, DecDataFun, DecEndFun, Fd, Sp, Md5, Md5Acc0};
+        {_, <<>>} ->
             {stream, Name, Fd, Sp};
         _ ->
             {stream, Name, Fd, Sp, Md5, couch_util:md5_init()}
@@ -382,7 +393,6 @@ stream_attachment(#att{name=Name, data=DataFun ,att_len=Len}, Atts,
                   Docs, DocId, Options) when is_function(DataFun) ->
     stream_attachment1({stream, Name, DataFun, Len}, Atts, Docs,
                        DocId, Options).
-
 
 stream_attachment1({stream, Name, _Fd, []}, Atts, Docs, DocId, Options) ->
     {att_eof, Name, fun() ->
@@ -441,8 +451,48 @@ stream_attachment1({stream, Name, Fd, [Pos|Rest], Md5, Md5Acc}, Atts,
     {att_chunk, Name, Bin, fun() ->
                 stream_attachment1({stream, Name, Fd, Rest, Md5, Md5Acc1},
                                    Atts, Docs, DocId, Options)
-        end}.
+        end};
+stream_attachment1({stream_decode, Name, _DecFun, EndFun, _Fd, [],
+                    Md5, Md5Acc}, Atts, Docs, DocId, Options) ->
+    case couch_util:md5_final(Md5Acc) of
+        Md5 ->
+            EndFun(),
+            {att_eof, Name, fun() ->
+                        stream_attachments(Atts, Docs, DocId, Options)
+                end};
+        _ ->
+            {error, corrupted_attachment}
+    end;
+stream_attachment1({stream_decode, Name, DecFun, EndFun, Fd, [{Pos, _Size}],
+                    Md5, Md5Acc}, Atts, Docs, DocId, Options) ->
+    stream_attachment1({stream_decode, Name, DecFun, EndFun, Fd, [Pos],
+                        Md5, Md5Acc}, Atts, Docs, DocId, Options);
+stream_attachment1({stream_decode, Name, DecFun, EndFun, Fd, [Pos],
+                    Md5, Md5Acc}, Atts, Docs, DocId, Options) ->
+    {ok, EncBin} = couch_file:pread_iolist(Fd, Pos),
+    Bin = DecFun(EncBin),
+    {att_chunk, Bin, fun() ->
+                Md5Acc1 = couch_util:md5_update(Md5Acc, EncBin),
+                stream_attachment1({stream_decode, Name, DecFun, EndFun, Fd,
+                                    [], Md5,Md5Acc1}, Atts, Docs, DocId,
+                                   Options)
+        end};
+stream_attachment1({stream_decode, Name, DecFun, EndFun, Fd,
+                    [{Pos, _Size} | Rest], Md5, Md5Acc},
+                   Atts, Docs, DocId, Options) ->
+    stream_attachment1({stream_decode, Name, DecFun, EndFun, Fd, [Pos |Rest],
+                        Md5, Md5Acc}, Atts, Docs, DocId, Options);
+stream_attachment1({stream_decode, Name, DecFun, EndFun, Fd, [Pos | Rest],
+                    Md5, Md5Acc}, Atts, Docs, DocId, Options) ->
 
+    {ok, EncBin} = couch_file:pread_iolist(Fd, Pos),
+    Bin = DecFun(EncBin),
+    {att_chunk, Bin, fun() ->
+                Md5Acc1 = couch_util:md5_update(Md5Acc, EncBin),
+                stream_attachment1({stream_decode, Name, DecFun, EndFun, Fd,
+                                    Rest, Md5, Md5Acc1}, Atts, Docs, DocId,
+                                   Options)
+        end}.
 
 
 %% @private
