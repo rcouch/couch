@@ -343,7 +343,7 @@ get(Db, DocId, Options0) ->
 -spec stream_doc(Next::next()) ->
     {doc, DocId::docid(), Doc::doc(), Next2::next()} |
     {att, Name::binary(), AttInfo::list(), Next2::next()} |
-    {att_body, Name::binary(), Next2::next()} |
+    {att_chunk, Name::binary(), Next2::next()} |
     {att_eof, Name::binary(), Next2::next()} |
     {doc_eof, DocId::docid()}.
 stream_doc(Next) when is_function(Next) ->
