@@ -14,7 +14,7 @@ ifeq ($(UNAME_SYS), Darwin)
 	JSLIBS = -L/usr/local/lib -lmozjs185
 else ifeq ($(UNAME_SYS), Linux)
 	JSCFLAGS = -DXP_UNIX -I/usr/include/js
-	JSLIBS = -lmoszj85 -lm
+	JSLIBS = -lmozjs185 -lm
 else ifeq ($(PLATFORM), freebsd)
 	JSCFLAGS = -DXP_UNIX -I/usr/local/include/js
 	JSLIBS = -L/usr/local/lib -lmozjs185 -lm
