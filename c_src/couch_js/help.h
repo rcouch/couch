@@ -13,10 +13,7 @@
 #ifndef COUCHJS_HELP_H
 #define COUCHJS_HELP_H
 
-#include "config.h"
-
 static const char VERSION_TEMPLATE[] =
-    "%s - %s\n"
     "\n"
     "Licensed under the Apache License, Version 2.0 (the \"License\"); you may "
         "not use\n"
@@ -38,7 +35,7 @@ static const char VERSION_TEMPLATE[] =
 static const char USAGE_TEMPLATE[] =
     "Usage: %s [FILE]\n"
     "\n"
-    "The %s command runs the %s JavaScript interpreter.\n"
+    "The %s command runs the RCOUCH JavaScript interpreter.\n"
     "\n"
     "The exit status is 0 for success or 1 for failure.\n"
     "\n"
@@ -46,25 +43,21 @@ static const char USAGE_TEMPLATE[] =
     "\n"
     "  -h          display a short help message and exit\n"
     "  -V          display version information and exit\n"
-    "  -H          enable %s cURL bindings (only avaiable\n"
-    "              if package was built with cURL available)\n"
+    "  -H          enable cURL bindings\n"
     "  -S SIZE     specify that the runtime should allow at\n"
     "              most SIZE bytes of memory to be allocated\n"
     "  -u FILE     path to a .uri file containing the address\n"
     "              (or addresses) of one or more servers\n"
-    "\n"
-    "Report bugs at <%s>.\n";
+    "\n";
 
-#define BASENAME COUCHJS_NAME
+#define BASENAME "couchjs"
 
-#define couch_version(basename)  \
+#define couch_version()  \
     fprintf(                     \
             stdout,              \
-            VERSION_TEMPLATE,    \
-            basename,            \
-            PACKAGE_STRING)
+            VERSION_TEMPLATE)
 
-#define DISPLAY_VERSION couch_version(BASENAME)
+#define DISPLAY_VERSION couch_version()
 
 
 #define couch_usage(basename) \
@@ -72,10 +65,7 @@ static const char USAGE_TEMPLATE[] =
             stdout,                             \
             USAGE_TEMPLATE,                     \
             basename,                           \
-            basename,                           \
-            PACKAGE_NAME,                       \
-            basename,                           \
-            PACKAGE_BUGREPORT)
+            basename)
 
 #define DISPLAY_USAGE couch_usage(BASENAME)
 
