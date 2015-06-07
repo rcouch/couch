@@ -19,6 +19,7 @@
 #include <jsapi.h>
 #include "utf8.h"
 #include "util.h"
+#include "http.h"
 
 // Soft dependency on cURL bindings because they're
 // only used when running the JS tests from the
