@@ -300,19 +300,14 @@ init([]) ->
     OsProcLimit = list_to_integer(
         couch_config:get("query_server_config","os_process_limit","10")),
 
-    % 'query_servers' specifies an OS command-line to execute.
-    lists:foreach(fun({Lang, Command}) ->
-        true = ets:insert(LangLimits, {?l2b(Lang), OsProcLimit, 0}),
-        true = ets:insert(Langs, {?l2b(Lang),
-                          couch_os_process, start_link, [Command]})
-    end, couch_config:get("query_servers")),
+
     % 'native_query_servers' specifies a {Module, Func, Arg} tuple.
     lists:foreach(fun({Lang, SpecStr}) ->
         {ok, {Mod, Fun, SpecArg}} = couch_util:parse_term(SpecStr),
         true = ets:insert(LangLimits, {?l2b(Lang), 0, 0}), % 0 means no limit
         true = ets:insert(Langs, {?l2b(Lang),
                           Mod, Fun, SpecArg})
-    end, couch_config:get("native_query_servers")),
+    end, couch_config:get("query_servers")),
 
 
     process_flag(trap_exit, true),
@@ -404,9 +399,6 @@ code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 config_change("query_servers") ->
-    supervisor:terminate_child(couch_secondary_services, query_servers),
-    supervisor:restart_child(couch_secondary_services, query_servers);
-config_change("native_query_servers") ->
     supervisor:terminate_child(couch_secondary_services, query_servers),
     supervisor:restart_child(couch_secondary_services, query_servers);
 config_change("query_server_config") ->
