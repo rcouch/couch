@@ -16,7 +16,7 @@
 
 {application, couch, [
     {description, "RCOUCH core based on Apache CouchDB"},
-    {vsn, "1.7.3"},
+    {vsn, "1.7.4"},
     {registered, [
         couch_config,
         couch_db_update,
