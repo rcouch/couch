@@ -38,7 +38,7 @@ distclean: clean
 
 $(COUCHJS_BIN): $(COUCHJS_OBJS)
 	@mkdir -p $(PRIVDIR)
-	@$(CC) $(COUCHJS_OBJS) $(JSLIBS) -o $(COUCHJS_BIN)
+	$(CC) $(COUCHJS_OBJS) $(JSLIBS) -o $(COUCHJS_BIN)
 
 %.o: %.c
-	@$(CC) -c $(JSCFLAGS) $<
+	$(CC) -c $(JSCFLAGS) $<

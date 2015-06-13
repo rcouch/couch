@@ -16,5 +16,5 @@
   0},
  {<<"jiffy">>,
   {git,"https://github.com/rcouch/jiffy.git",
-       {ref,"746d119416366d5294b78a5efcf2fa8e6cbebf1a"}},
+       {ref,"b162efd7df4e20f2a5352b76a1483ff8f50dd3c9"}},
   0}].
