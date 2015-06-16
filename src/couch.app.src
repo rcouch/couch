@@ -16,7 +16,7 @@
 
 {application, couch, [
     {description, "RCOUCH core based on Apache CouchDB"},
-    {vsn, "1.7.3"},
+    {vsn, "1.8.0"},
     {registered, [
         couch_config,
         couch_db_update,
@@ -36,7 +36,7 @@
     {mod, {couch_app, []}},
     {env, []},
     {applications, [kernel, stdlib, lager, crypto, sasl, asn1, public_key,
-                    ssl, os_mon, inets]},
+                    ssl, os_mon, inets, gproc]},
     {included_applications, [snappy, jiffy]}
 ]}.
 
