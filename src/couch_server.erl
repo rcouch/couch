@@ -148,6 +148,7 @@ hash_admin_passwords(Persist) ->
         end, couch_passwords:get_unhashed_admins()).
 
 
+%% HOOKS
 db_updated(DbName, Event) ->
     couch_event:publish(db_updated, {DbName, Event}).
 
@@ -233,7 +234,7 @@ do_open_db(DbName, Server, Options, {FromPid, _}) ->
             true = ets:insert(couch_dbs_by_pid, {DbPid, DbName}),
             case lists:member(create, Options) of
             true ->
-                    couch_hooks:run(db_updated, DbName, [DbName, created]),
+                    couch_hooks:run(db_updated, DbName, [DbName, created]);
             false ->
                  ok
             end,
