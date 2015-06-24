@@ -191,6 +191,10 @@ init([]) ->
                 start_time=couch_util:rfc1123_date()}}.
 
 terminate(_Reason, _Srv) ->
+    %% unregister db hooks
+    couch_hooks:remove(db_updated, all, ?MODULE, db_updated, 0),
+    couch_hooks:remove(ddoc_updated, all, ?MODULE, ddoc_updated, 0),
+
     lists:foreach(
         fun({_, Pid}) ->
                 couch_util:shutdown_sync(Pid)
