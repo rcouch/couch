@@ -19,6 +19,9 @@
 -export([handle_cast/2,code_change/3,handle_info/2,terminate/2]).
 -export([dev_start/0,is_admin/2,has_admins/0,get_stats/0]).
 
+%% hooks
+-export([db_updated/2, ddoc_updated/2]).
+
 -include("couch_db.hrl").
 
 -record(server,{
@@ -144,6 +147,14 @@ hash_admin_passwords(Persist) ->
             couch_config:set("admins", User, ?b2l(HashedPassword), Persist)
         end, couch_passwords:get_unhashed_admins()).
 
+
+db_updated(DbName, Event) ->
+    couch_event:publish(db_updated, {DbName, Event}).
+
+ddoc_updated(DbName, Event) ->
+    couch_event:publish(ddoc_updated, {DbName, Event}).
+
+
 init([]) ->
     % read config and register for configuration changes
 
@@ -167,6 +178,12 @@ init([]) ->
     ets:new(couch_dbs_by_name, [ordered_set, protected, named_table]),
     ets:new(couch_dbs_by_pid, [set, private, named_table]),
     ets:new(couch_sys_dbs, [set, private, named_table]),
+
+    %% register db hook
+    couch_hooks:add(db_updated, all, ?MODULE, db_updated, 0),
+    couch_hooks:add(ddoc_updated, all, ?MODULE, ddoc_updated, 0),
+
+
     process_flag(trap_exit, true),
     {ok, #server{root_dir=RootDir,
                 dbname_regexp=RegExp,
@@ -216,7 +233,7 @@ do_open_db(DbName, Server, Options, {FromPid, _}) ->
             true = ets:insert(couch_dbs_by_pid, {DbPid, DbName}),
             case lists:member(create, Options) of
             true ->
-                couch_db_update_notifier:notify({created, DbName});
+                    couch_hooks:run(db_updated, DbName, [DbName, created]),
             false ->
                  ok
             end,
@@ -281,7 +298,7 @@ handle_call({delete, DbName, _Options}, _From, Server) ->
 
         case couch_file:delete(Server#server.root_dir, FullFilepath) of
         ok ->
-            couch_db_update_notifier:notify({deleted, DbName}),
+            couch_hooks:run(db_updated, DbName, [DbName, deleted]),
             {reply, ok, Server2};
         {error, enoent} ->
             {reply, not_found, Server2};
