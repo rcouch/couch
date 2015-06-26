@@ -24,12 +24,17 @@
 -module(couch_event).
 
 -export([publish/2,
-         publish_cond/2,
+         publish_all/2,
          subscribe/1,
          subscribe_cond/2,
          change_cond/2,
          unsubscribe/1,
          list_subs/1]).
+
+-export([publish_db_update/2,
+         subscribe_db_updates/1,
+         unsubscribe_db_updates/1,
+         change_db/1]).
 
 -export([key_for_event/1]).
 
@@ -46,36 +51,29 @@
 %%
 %% `{couch_event, Event, Msg}'
 %%
-%% The function uses `gproc:send/2' to send a message to all processes which have a
-%% property `{p,l,{couch_event,Event}}'.
-%% @end
-publish(Event, Msg) ->
-    gproc:send(key_for_event(Event), {?EVTAG, Event, Msg}).
-
--spec publish_cond(event(), msg()) -> msg().
-%% @doc Publishes the message `Msg' to conditional subscribers of `Event'
-%%
 %% The message will be delivered to each subscriber provided their respective
 %% condition tests succeed.
-%%
-%% @see subscribe_cond/2.
-%%
-publish_cond(Event, Msg) ->
+%% @end
+publish(Event, Msg) ->
     Message = {?EVTAG, Event, Msg},
     lists:foreach(
-      fun({Pid, undefined}) -> Pid ! Message;
+      fun({Pid, undefined}) ->
+              Pid ! Message;
          ({Pid, Spec}) ->
               try   C = ets:match_spec_compile(Spec),
                     case ets:match_spec_run([Msg], C) of
                         [true] -> Pid ! Message;
-                        _ -> ok
+                        _Else -> ok
                     end
               catch
-                  error:_ ->
-                      ok
+                  error:_ -> ok
               end
-      end, gproc:select({l,p}, [{ {key_for_event(Event), '$1', '$2'},
+      end, gproc:select({l,p}, [{{key_for_event(Event), '$1', '$2'},
                                   [], [{{'$1','$2'}}] }])).
+
+%% @doc publish an event to all
+publish_all(Event, Msg) ->
+    gproc:reg({p, l,{?EVTAG, Event, Msg}}).
 
 -spec subscribe(event()) -> true.
 %% @doc Subscribe to events of type `Event'
@@ -104,6 +102,24 @@ subscribe_cond(Event, Spec) ->
     end,
     gproc:reg(key_for_event(Event), Spec).
 
+publish_db_update(DbName, Msg) ->
+    publish(db_updates, {DbName, Msg}).
+
+%% @doc subscribe to updates of a specific database
+subscribe_db_updates(DbName) ->
+    subscribe_cond(db_updated, [{{'$1', '_'},
+                                 [{'==', '$1', DbName}],
+                                 [true]}]).
+
+%% unsubscribe for db updates
+unsubscribe_db_updates(_DbName) ->
+    unsubscribe(db_updated).
+
+%% @doc change db subscription for the current process
+change_db(DbName) ->
+    change_cond(db_updated, [{{'$1', '_'},
+                              [{'==', '$1', DbName}],
+                              ['_']}]).
 
 -spec change_cond(event(), undefined | ets:match_spec()) -> true.
 %% @doc Change the condition specification of an existing subscription.

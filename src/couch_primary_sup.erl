@@ -31,24 +31,12 @@ init([]) ->
             brutal_kill,
             worker,
             [couch_server]},
-        {couch_db_update_event,
-            {gen_event, start_link, [{local, couch_db_update}]},
-            permanent,
-            brutal_kill,
-            worker,
-            dynamic},
         {couch_log,
             {couch_log, start_link, []},
             permanent,
             brutal_kill,
             worker,
-            [couch_log]},
-        {couch_index_sup,
-             {couch_index_sup, start_link, []},
-             permanent,
-             infinity,
-             supervisor,
-             [couch_index_sup]}
+            [couch_log]}
     ],
     {ok, {{one_for_one, 10, 3600}, Children}}.
 

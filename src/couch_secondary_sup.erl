@@ -18,15 +18,7 @@ start_link() ->
     supervisor:start_link({local,couch_secondary_services}, ?MODULE, []).
 
 init([]) ->
-    SecondarySupervisors = [
-        {couch_db_update_notifier_sup,
-            {couch_db_update_notifier_sup, start_link, []},
-            permanent,
-            infinity,
-            supervisor,
-            [couch_db_update_notifier_sup]}
-    ],
-    Children = SecondarySupervisors ++ [
+    Children = [
         begin
             {ok, {Module, Fun, Args}} = couch_util:parse_term(SpecStr),
 
