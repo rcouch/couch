@@ -92,7 +92,7 @@ subscribe(Event) ->
 %% @doc Subscribe conditionally to events of type `Event'
 %%
 %% This function is similar to {@link subscribe/1}, but adds a condition
-%% in the form of a match specification.
+%% in the form of a match specification. A spefication should
 %% @end
 subscribe_cond(Event, Spec) ->
     case Spec of
