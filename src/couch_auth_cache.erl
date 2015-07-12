@@ -124,14 +124,13 @@ init(_) ->
         fun("couch_httpd_auth", "auth_cache_size", SizeList) ->
             Size = list_to_integer(SizeList),
             ok = gen_server:call(?MODULE, {new_max_cache_size, Size}, infinity);
-        ("couch_httpd_auth", "authentication_db", DbName) ->
-            couch_event:change_db(DbName),
+        ("couch_httpd_auth", "authentication_db", _DbName) ->
             ok = gen_server:call(?MODULE, reinit_cache, infinity)
         end
     ),
 
     AuthDbName = ?l2b(couch_config:get("couch_httpd_auth", "authentication_db")),
-    couch_event:subscribe_db_updates(AuthDbName),
+    _ = couch_event:subscribe_db_updates(AuthDbName),
 
     State = #state{
         max_cache_size = list_to_integer(
@@ -190,7 +189,7 @@ handle_cast({cache_hit, UserName}, State) ->
     end,
     {noreply, State}.
 
-handle_info({couch_event, db_updated, {_, Event}}, State) ->
+handle_info({couch_event, db_updated, {_, Event}}=Ev, State) ->
     case Event of
         created ->
             catch erlang:demonitor(State#state.db_mon_ref, [flush]),
@@ -210,7 +209,7 @@ handle_info(_Info, State) ->
 
 terminate(_Reason, _State) ->
     [{auth_db_name, DbName}] = ets:lookup(?STATE, auth_db_name),
-    couch_event:unsubscribe_db_updates(DbName),
+    catch couch_event:unsubscribe_db_updates(DbName),
     exec_if_auth_db(fun(AuthDb) -> catch couch_db:close(AuthDb) end),
     true = ets:delete(?BY_USER),
     true = ets:delete(?BY_ATIME),
@@ -231,7 +230,7 @@ clear_cache(State) ->
 reinit_cache(State) ->
     NewState = clear_cache(State),
     AuthDbName = ?l2b(couch_config:get("couch_httpd_auth", "authentication_db")),
-    couch_event:change_db(AuthDbName),
+    _ = couch_event:change_db(AuthDbName),
     true = ets:insert(?STATE, {auth_db_name, AuthDbName}),
     AuthDb = open_auth_db(),
     true = ets:insert(?STATE, {auth_db, AuthDb}),

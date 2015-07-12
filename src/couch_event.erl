@@ -103,23 +103,23 @@ subscribe_cond(Event, Spec) ->
     gproc:reg(key_for_event(Event), Spec).
 
 publish_db_update(DbName, Msg) ->
-    publish(db_updates, {DbName, Msg}).
+    publish(db_updated, {DbName, Msg}).
 
 %% @doc subscribe to updates of a specific database
+subscribe_db_updates(DbName) when is_list(DbName) ->
+    subscribe_db_updates(list_to_binary(DbName));
 subscribe_db_updates(DbName) ->
-    subscribe_cond(db_updated, [{{'$1', '_'},
-                                 [{'==', '$1', DbName}],
-                                 [true]}]).
+    subscribe_cond(db_updated, [{{DbName, '_'}, [], [true]}]).
 
 %% unsubscribe for db updates
 unsubscribe_db_updates(_DbName) ->
     unsubscribe(db_updated).
 
 %% @doc change db subscription for the current process
+change_db(DbName) when is_list(DbName) ->
+    change_db(list_to_binary(DbName));
 change_db(DbName) ->
-    change_cond(db_updated, [{{'$1', '_'},
-                              [{'==', '$1', DbName}],
-                              ['_']}]).
+    change_cond(db_updated, [{{DbName, '_'}, [], [true]}]).
 
 -spec change_cond(event(), undefined | ets:match_spec()) -> true.
 %% @doc Change the condition specification of an existing subscription.

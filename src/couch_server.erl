@@ -236,15 +236,15 @@ do_open_db(DbName, Server, Options, {FromPid, _}) ->
         {ok, DbPid} ->
             true = ets:insert(couch_dbs_by_name, {DbName, DbPid}),
             true = ets:insert(couch_dbs_by_pid, {DbPid, DbName}),
+            DbsOpen = Server#server.dbs_open + 1,
+            NewServer = Server#server{dbs_open = DbsOpen},
+            Reply = (catch couch_db:open_ref_counted(DbPid, FromPid)),
             case lists:member(create, Options) of
             true ->
                     couch_hooks:run(db_updated, DbName, [DbName, created]);
             false ->
                  ok
             end,
-            DbsOpen = Server#server.dbs_open + 1,
-            NewServer = Server#server{dbs_open = DbsOpen},
-            Reply = (catch couch_db:open_ref_counted(DbPid, FromPid)),
             {reply, Reply, NewServer};
         Error ->
             {reply, Error, Server}
