@@ -397,10 +397,8 @@ validate_names_and_roles({Props}) when is_list(Props) ->
     _ -> throw("names must be a JSON list of strings")
     end,
     case couch_util:get_value(<<"roles">>,Props,[]) of
-    Rs when is_list(Rs) ->
-        [throw("roles must be a JSON list of strings") ||R <- Rs, not is_binary(R)],
-        Rs;
-    _ -> throw("roles must be a JSON list of strings")
+    Rs when is_list(Rs) -> Rs;
+    _ -> throw("roles must be a JSON list.")
     end,
     ok.
 
