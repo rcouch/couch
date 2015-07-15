@@ -2,6 +2,8 @@
 
 -include("couch_db.hrl").
 
+-export([decode/1, encode/1]).
+
 decode(Bin) ->
     ?JSON_DECODE(Bin).
 
