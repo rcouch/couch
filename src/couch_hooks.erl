@@ -15,7 +15,8 @@
 -export([add/4, add/5,
          remove/4, remove/5,
          run/2, run/3,
-         run_fold/3, run_fold/4]).
+         run_fold/3, run_fold/4,
+         run_until_ok/2, run_until_ok/3]).
 
 -export([init_hooks/0]).
 
@@ -43,39 +44,57 @@ remove(Hook, DbName, Module, Fun, Prio) ->
 run(Hook, Args) ->
     lists:foreach(fun({M, F}) ->
                           erlang:apply(M, F, Args)
-                  end, ets:select(?HOOKS, [{{{{g, '$1'}, '_', '_'}, $2},
-                                            [{'==', '$1', Hook}],
-                                            ['$2']}])).
+                  end, ets:select(?HOOKS, [{{{{g, Hook}, '_', '_'}, $1},
+                                            [], ['$1']}])).
 
 run(Hook, DbName, Args) ->
     lists:foreach(fun({M, F}) ->
                           erlang:apply(M, F, Args)
                   end, ets:select(?HOOKS,
-                                  [{{{{db, '$1', '$2'}, '_', '_'}, '$3'},
-                                    [{'==', '$1', Hook},
-                                     {'orelse',
-                                      {'==', '$2', DbName},
-                                      {'==', '$2', all}}],
-                                    ['$3']}])).
+                                  [{{{{db, Hook, '$1'}, '_', '_'}, '$2'},
+                                    [{'orelse',
+                                      {'==', '$1', DbName},
+                                      {'==', '$1', all}}],
+                                    ['$2']}])).
 
 
 run_fold(Hook, Args, Acc) ->
-    lists:foreach(fun({M, F}, Acc1) ->
+    lists:fold(fun({M, F}, Acc1) ->
                           erlang:apply(M, F, Args ++ [Acc1])
-                  end, Acc, ets:select(?HOOKS, [{{{{g, '$1'}, '_', '_'}, $2},
-                                            [{'==', '$1', Hook}],
-                                            ['$2']}])).
+                  end, Acc, ets:select(?HOOKS, [{{{{g, Hook}, '_', '_'}, $1},
+                                                 [], ['$1']}])).
 
 run_fold(Hook, DbName, Args, Acc) ->
-    lists:foreach(fun({M, F}, Acc1) ->
+    lists:fold(fun({M, F}, Acc1) ->
                           erlang:apply(M, F, Args ++ [Acc1])
                   end, Acc, ets:select(?HOOKS,
-                                       [{{{{db, '$1', '$2'}, '_', '_'}, '$3'},
-                                         [{'==', '$1', Hook},
-                                          {'orelse',
-                                           {'==', '$2', DbName},
-                                           {'==', '$2', all}}],
-                                         ['$3']}])).
+                                       [{{{{db, Hook, '$1'}, '_', '_'}, '$2'},
+                                         [{'orelse',
+                                           {'==', '$1', DbName},
+                                           {'==', '$1', all}}],
+                                         ['$2']}])).
+
+run_until_ok(Hook, Args) ->
+    Hooks = ets:select(?HOOKS, [{{{{g, Hook}, '_', '_'}, $1}, [], ['$1']}]),
+    loop_until_ok(Hooks, Args).
+
+
+run_until_ok(Hook, DbName, Args) ->
+    Hooks = ets:select(?HOOKS, [{{{{db, Hook, '$1'}, '_', '_'}, '$2'},
+                                 [{'orelse',
+                                   {'==', '$1', DbName},
+                                   {'==', '$1', all}}],
+                                 ['$2']}]),
+    loop_until_ok(Hooks, Args).
+
+
+loop_until_ok([], _Args) ->
+    error;
+loop_until_ok([{M, F} | Rest], Args) ->
+    case erlang:apply(M, F, Args) of
+        ok -> ok;
+        _ -> run_until_ok(Rest, Args)
+    end.
 
 
 init_hooks() ->
