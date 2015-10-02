@@ -128,28 +128,16 @@ init(_) ->
             ok = gen_server:call(?MODULE, reinit_cache, infinity)
         end
     ),
-    {ok, Notifier} = couch_db_update_notifier:start_link(fun handle_db_event/1),
+
+    AuthDbName = ?l2b(couch_config:get("couch_httpd_auth", "authentication_db")),
+    _ = couch_event:subscribe_db_updates(AuthDbName),
+
     State = #state{
-        db_notifier = Notifier,
         max_cache_size = list_to_integer(
             couch_config:get("couch_httpd_auth", "auth_cache_size", "50")
         )
     },
     {ok, reinit_cache(State)}.
-
-
-handle_db_event({Event, DbName}) ->
-    [{auth_db_name, AuthDbName}] = ets:lookup(?STATE, auth_db_name),
-    case DbName =:= AuthDbName of
-    true ->
-        case Event of
-        created -> gen_server:call(?MODULE, reinit_cache, infinity);
-        compacted -> gen_server:call(?MODULE, auth_db_compacted, infinity);
-        _Else   -> ok
-        end;
-    false ->
-        ok
-    end.
 
 
 handle_call(reinit_cache, _From, State) ->
@@ -201,13 +189,27 @@ handle_cast({cache_hit, UserName}, State) ->
     end,
     {noreply, State}.
 
+handle_info({couch_event, db_updated, {_, Event}}=Ev, State) ->
+    case Event of
+        created ->
+            catch erlang:demonitor(State#state.db_mon_ref, [flush]),
+            exec_if_auth_db(fun(AuthDb) -> catch couch_db:close(AuthDb) end),
+            {noreply, reinit_cache(State)};
+        compacted ->
+            exec_if_auth_db(
+              fun(AuthDb) ->
+                      true = ets:insert(?STATE, {auth_db, reopen_auth_db(AuthDb)})
+              end),
+            {noreply, State};
+        _Else   -> {noreply, State}
+    end;
 
-handle_info({'DOWN', Ref, _, _, _Reason}, #state{db_mon_ref = Ref} = State) ->
-    {noreply, reinit_cache(State)}.
+handle_info(_Info, State) ->
+    {noreply, State}.
 
-
-terminate(_Reason, #state{db_notifier = Notifier}) ->
-    couch_db_update_notifier:stop(Notifier),
+terminate(_Reason, _State) ->
+    [{auth_db_name, DbName}] = ets:lookup(?STATE, auth_db_name),
+    catch couch_event:unsubscribe_db_updates(DbName),
     exec_if_auth_db(fun(AuthDb) -> catch couch_db:close(AuthDb) end),
     true = ets:delete(?BY_USER),
     true = ets:delete(?BY_ATIME),
@@ -228,6 +230,7 @@ clear_cache(State) ->
 reinit_cache(State) ->
     NewState = clear_cache(State),
     AuthDbName = ?l2b(couch_config:get("couch_httpd_auth", "authentication_db")),
+    _ = couch_event:change_db(AuthDbName),
     true = ets:insert(?STATE, {auth_db_name, AuthDbName}),
     AuthDb = open_auth_db(),
     true = ets:insert(?STATE, {auth_db, AuthDb}),

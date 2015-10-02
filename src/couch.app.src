@@ -15,14 +15,13 @@
 
 
 {application, couch, [
-    {description, "Apache CouchDB"},
-    {vsn, "1.6.1"},
+    {description, "RCOUCH core based on Apache CouchDB"},
+    {vsn, "1.8.3"},
     {registered, [
         couch_config,
         couch_db_update,
         couch_db_update_notifier_sup,
         couch_external_manager,
-        couch_index_sup,
         couch_log,
         couch_primary_services,
         couch_query_servers,
@@ -36,6 +35,7 @@
     {mod, {couch_app, []}},
     {env, []},
     {applications, [kernel, stdlib, lager, crypto, sasl, asn1, public_key,
-                    ssl, os_mon, inets]}
+                    ssl, os_mon, inets, gproc]},
+    {included_applications, [snappy, jiffy]}
 ]}.
 
